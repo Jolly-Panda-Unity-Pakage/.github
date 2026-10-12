@@ -41,6 +41,12 @@ Our goal is simple:
 
 ## 🚀 Our Packages
 
+<!-- PACKAGES:START -->
+<!-- Generated automatically by .github/workflows/update-packages.yml - do not edit between the markers. -->
+
+No packages have been published yet.
+<!-- PACKAGES:END -->
+
 ### 🎵 Audio Import Optimizer
 
 A Unity Editor tool designed to analyze audio import settings, apply configurable optimization profiles, and help developers maintain consistent audio configurations across their projects.

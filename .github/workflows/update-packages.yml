@@ -1,0 +1,111 @@
+name: Update published packages
+
+# Keeps the "Our Packages" section of profile/README.md in sync with the
+# organization's published GitHub Releases. See docs/PACKAGES_AUTOMATION.md.
+#
+# Triggers: daily schedule, manual run, and an optional repository_dispatch
+# event that package repositories can send when they publish a release.
+# There is deliberately NO push trigger, so the bot's own commit cannot
+# start another run (no workflow loop).
+
+on:
+  schedule:
+    - cron: "17 3 * * *" # daily, 03:17 UTC (off the top of the hour to avoid peak load)
+  workflow_dispatch:
+    inputs:
+      include_prereleases:
+        description: "Also list pre-releases (can only turn this ON for this run)"
+        type: boolean
+        default: false
+      include_archived:
+        description: "Also list archived repositories (can only turn this ON for this run)"
+        type: boolean
+        default: false
+      allow_empty:
+        description: "Allow replacing an existing package list with an empty one"
+        type: boolean
+        default: false
+  repository_dispatch:
+    types: [package-release-published]
+
+# No permissions by default; each job requests only what it needs.
+permissions: {}
+
+# Never run two updates at once; let a running one finish.
+concurrency:
+  group: update-packages
+  cancel-in-progress: false
+
+env:
+  # Policy: a manual input OR a repository variable (Settings > Secrets and variables > Actions > Variables) can enable these.
+  INCLUDE_PRERELEASES: ${{ inputs.include_prereleases || vars.INCLUDE_PRERELEASES || 'false' }}
+  INCLUDE_ARCHIVED: ${{ inputs.include_archived || vars.INCLUDE_ARCHIVED || 'false' }}
+  ALLOW_EMPTY_LIST: ${{ inputs.allow_empty || 'false' }}
+  README_PATH: profile/README.md
+
+jobs:
+  # Job 1: read-only. Talks to the GitHub API and produces packages.json.
+  generate:
+    name: Discover published packages
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Check out default branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+
+      - name: Run unit tests
+        run: python3 -m unittest discover -s tests -v
+
+      - name: Fetch published packages
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_API_URL: ${{ github.api_url }}
+        run: python3 scripts/update_packages.py fetch --org "$GITHUB_REPOSITORY_OWNER" --out packages.json
+
+      - name: Upload package data
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: packages-json
+          path: packages.json
+          if-no-files-found: error
+          retention-days: 1
+
+  # Job 2: the only job with write access. Re-applies the data to a fresh
+  # checkout and commits only when the README actually changes.
+  commit:
+    name: Update README
+    needs: generate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Check out default branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+
+      - name: Download package data
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: packages-json
+
+      - name: Apply to README
+        run: python3 scripts/update_packages.py apply --data packages.json --readme "$README_PATH"
+
+      - name: Commit and push if changed
+        run: |
+          if git diff --quiet -- "$README_PATH"; then
+            echo "README already up to date; nothing to commit."
+            exit 0
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- "$README_PATH"
+          git commit -m "docs: update published packages list"
+          git push
